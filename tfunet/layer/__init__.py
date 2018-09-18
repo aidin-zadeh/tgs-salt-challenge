@@ -52,12 +52,13 @@ class Deconv2d(Layer):
 
         self.padding = padding
 
-    def __call__(self, x, weights, stride_size):
+    def __call__(self, x, weights, stride_size=1):
 
         with tf.name_scope("deconv2d"):
             in_shape = tf.shape(x)
 
-            out_shape = tf.stack([in_shape[0], in_shape[1]*2, in_shape[2], in_shape[3]//2])
+            out_shape = tf.stack([in_shape[0], in_shape[1]*2, in_shape[2]*2, in_shape[3]//2])
+            out_shape = tf.stack([in_shape[0], in_shape[1]*2, in_shape[2]*2, in_shape[3]//2])
             return tf.nn.conv2d_transpose(x,
                                           weights,
                                           out_shape,
@@ -91,9 +92,9 @@ class PixelWiseSoftMax(Layer):
     def __call__(self, x):
 
         with tf.name_scope("pixel.wise.softmax"):
-            max_axis = tf.reduce_max(x, axis=3, keep_dims=True)
+            max_axis = tf.reduce_max(x, axis=3, keepdims=True)
             exp_x = tf.exp(x - max_axis)
-            sum_exp_x = tf.reduce_sum(exp_x, axis=3, keep_dims=True)
+            sum_exp_x = tf.reduce_sum(exp_x, axis=3, keepdims=True)
             return exp_x / sum_exp_x
 
 

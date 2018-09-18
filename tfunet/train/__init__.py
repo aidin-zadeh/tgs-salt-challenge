@@ -3,27 +3,35 @@ import os
 import logging
 import shutil
 import tensorflow as tf
+from tensorflow.python import debug as tfdbg
 import numpy as np
 
 from tfunet.utils import (
-    crop_to_shape
+    crop_to_shape,
+    save_image,
+    combine_img_prediction
 )
 
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s %(message)s')
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s %(message)s')
+
 
 class Trainer(object):
+    """
+    Trains a unet instance
+    :param net: the unet instance to train
+    :param batch_size: size of training batch
+    :param verification_batch_size: size of verification batch
+    :param norm_grads: (optional) true if normalized gradients should be added to the summaries
+    :param optimizer: (optional) name of the optimizer to use (momentum or adam)
+    :param opt_kwargs: (optional) kwargs passed to the learning rate (momentum opt) and to the optimizer
+    """
 
-    def __init__(self,
-                 net,
-                 batch_size=1,
-                 valid_batch_size=4,
-                 norm_grads=False,
-                 optimizer="momentum",
-                 opt_kwargs={}):
+    def __init__(self, net, batch_size=1, verification_batch_size = 4, norm_grads=False, optimizer="momentum", opt_kwargs={}):
         self.net = net
         self.batch_size = batch_size
-        self.verification_batch_size = valid_batch_size
+        self.verification_batch_size = verification_batch_size
         self.norm_grads = norm_grads
         self.optimizer = optimizer
         self.opt_kwargs = opt_kwargs
@@ -34,25 +42,22 @@ class Trainer(object):
             decay_rate = self.opt_kwargs.pop("decay_rate", 0.95)
             momentum = self.opt_kwargs.pop("momentum", 0.2)
 
-            self.learning_rate_node = tf.train.exponential_decay(
-                learning_rate=learning_rate,
-                global_step=global_step,
-                decay_steps=training_iters,
-                decay_rate=decay_rate,
-                staircase=True)
+            self.learning_rate_node = tf.train.exponential_decay(learning_rate=learning_rate,
+                                                                 global_step=global_step,
+                                                                 decay_steps=training_iters,
+                                                                 decay_rate=decay_rate,
+                                                                 staircase=True)
 
-            optimizer = tf.train.MomentumOptimizer(
-                learning_rate=self.learning_rate_node,
-                momentum=momentum,
-                **self.opt_kwargs).minimize(self.net.cost, global_step=global_step)
-
+            optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate_node, momentum=momentum,
+                                                   **self.opt_kwargs).minimize(self.net.cost,
+                                                                               global_step=global_step)
         elif self.optimizer == "adam":
             learning_rate = self.opt_kwargs.pop("learning_rate", 0.001)
             self.learning_rate_node = tf.Variable(learning_rate, name="learning_rate")
 
-            optimizer = tf.train.AdamOptimizer(
-                learning_rate=self.learning_rate_node,
-                **self.opt_kwargs).minimize(self.net.cost, global_step=global_step)
+            optimizer = tf.train.AdamOptimizer(learning_rate=self.learning_rate_node,
+                                               **self.opt_kwargs).minimize(self.net.cost,
+                                                                           global_step=global_step)
 
         return optimizer
 
@@ -65,7 +70,7 @@ class Trainer(object):
             tf.summary.histogram('norm_grads', self.norm_gradients_node)
 
         tf.summary.scalar('loss', self.net.cost)
-        tf.summary.scalar('cross_entropy', self.net.cross_entropy)
+        tf.summary.scalar('cross_entropy', self.net.crossentropy)
         tf.summary.scalar('accuracy', self.net.accuracy)
 
         self.optimizer = self._get_optimizer(training_iters, global_step)
@@ -163,6 +168,49 @@ class Trainer(object):
 
             return save_path
 
+    def store_prediction(self, sess, batch_x, batch_y, name):
+        prediction = sess.run(self.net.predicter, feed_dict={self.net.x: batch_x,
+                                                             self.net.y: batch_y,
+                                                             self.net.keep_prob: 1.})
+        pred_shape = prediction.shape
+
+        loss = sess.run(self.net.cost, feed_dict={self.net.x: batch_x,
+                                                  self.net.y: crop_to_shape(batch_y, pred_shape),
+                                                  self.net.keep_prob: 1.})
+
+        logging.info("Verification error= {:.1f}%, loss= {:.4f}".format(error_rate(prediction,
+                                                                                   crop_to_shape(batch_y,
+                                                                                                      prediction.shape)),
+                                                                        loss))
+
+        img = combine_img_prediction(batch_x, batch_y, prediction)
+        save_image(img, "%s/%s.jpg" % (self.prediction_path, name))
+
+        return pred_shape
+
+    def output_epoch_stats(self, epoch, total_loss, training_iters, lr):
+        logging.info(
+            "Epoch {:}, Average loss: {:.4f}, learning rate: {:.4f}".format(epoch, (total_loss / training_iters), lr))
+
+    def output_minibatch_stats(self, sess, summary_writer, step, batch_x, batch_y):
+        # Calculate batch loss and accuracy
+        summary_str, loss, acc, predictions = sess.run([self.summary_op,
+                                                        self.net.cost,
+                                                        self.net.accuracy,
+                                                        self.net.predicter],
+                                                       feed_dict={self.net.x: batch_x,
+                                                                  self.net.y: batch_y,
+                                                                  self.net.keep_prob: 1.})
+        summary_writer.add_summary(summary_str, step)
+        summary_writer.flush()
+        logging.info(
+            "Iter {:}, Minibatch Loss= {:.4f}, Training Accuracy= {:.4f}, Minibatch error= {:.1f}%".format(step,
+                                                                                                           loss,
+                                                                                                           acc,
+                                                                                                           error_rate(
+                                                                                                               predictions,
+                                                                                                               batch_y)))
+
 
 def _update_avg_gradients(avg_gradients, gradients, step):
     if avg_gradients is None:
@@ -182,3 +230,21 @@ def error_rate(predictions, labels):
             100.0 *
             np.sum(np.argmax(predictions, 3) == np.argmax(labels, 3)) /
             (predictions.shape[0] * predictions.shape[1] * predictions.shape[2]))
+
+
+def get_image_summary(img, idx=0):
+    """
+    Make an image summary for 4d tensor image with index idx
+    """
+
+    V = tf.slice(img, (0, 0, 0, idx), (1, -1, -1, 1))
+    V -= tf.reduce_min(V)
+    V /= tf.reduce_max(V)
+    V *= 255
+
+    img_w = tf.shape(img)[1]
+    img_h = tf.shape(img)[2]
+    V = tf.reshape(V, tf.stack((img_w, img_h, 1)))
+    V = tf.transpose(V, (2, 0, 1))
+    V = tf.reshape(V, tf.stack((-1, img_w, img_h, 1)))
+    return V

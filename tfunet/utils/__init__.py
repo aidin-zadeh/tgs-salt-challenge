@@ -3,6 +3,7 @@
 from __future__ import print_function, division, absolute_import, unicode_literals
 import numpy as np
 import matplotlib.pyplot as plt
+import tensorflow as tf
 from PIL import Image
 import re
 
@@ -103,6 +104,23 @@ def save_image(img, path):
     :param img: the rgb image to save
     :param path: the target path
     """
-
-
     Image.fromarray(img.round().astype(np.uint8)).save(path, 'JPEG', dpi=[300, 300], quality=90)
+
+
+def get_image_summary(img, idx=0):
+    
+    # rescale image to [0, 255]
+    v = tf.slice(img, begin=(0, 0, 0, idx), size=(1, -1, -1, 1))
+    v -= tf.reduce_min(v)
+    v /= tf.reduce_max(v)
+    v *= 255
+
+    # get image width/height
+    img_width = tf.shape(img)[1]
+    img_height = tf.shape(img)[2]
+
+    v = tf.reshape(v, tf.stack((img_width, img_height, 1)))
+    v = tf.transpose(v, (2, 0, 1))
+    v = tf.reshape(v, tf.stack((-1, img_width, img_height, 1)))
+
+    return v
